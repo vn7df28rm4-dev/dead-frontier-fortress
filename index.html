@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#111722">
+<link rel="manifest" href="manifest.json">
+<title>Dead Frontier: Fortress</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080b10;color:#e9edf2;font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:none}
+canvas{display:block;width:100%;height:100%;background:#18201c}
+#hud{position:fixed;left:10px;top:calc(10px + env(safe-area-inset-top));z-index:5;background:rgba(8,12,18,.82);border:1px solid #45505e;border-radius:12px;padding:8px 10px;font-size:12px;line-height:1.45;min-width:170px;backdrop-filter:blur(4px)}
+#hud b{font-size:13px}.bar{height:7px;background:#333;border-radius:6px;overflow:hidden;margin:3px 0 5px}.bar i{display:block;height:100%;width:100%;background:#6fd36f}
+#msg{position:fixed;top:calc(10px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:6;background:rgba(0,0,0,.72);padding:7px 12px;border-radius:999px;font-size:12px;opacity:0;transition:.2s;pointer-events:none}
+#help{position:fixed;right:10px;top:calc(10px + env(safe-area-inset-top));z-index:5;background:rgba(8,12,18,.8);padding:8px 10px;border-radius:10px;border:1px solid #45505e;font-size:11px;text-align:right}
+#controls{position:fixed;inset:0;z-index:4;pointer-events:none}
+#joy{position:absolute;left:18px;bottom:calc(20px + env(safe-area-inset-bottom));width:132px;height:132px;border-radius:50%;background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.2);pointer-events:auto}
+#stick{position:absolute;width:58px;height:58px;border-radius:50%;left:35px;top:35px;background:rgba(255,255,255,.22);border:2px solid rgba(255,255,255,.35)}
+.actions{position:absolute;right:14px;bottom:calc(18px + env(safe-area-inset-bottom));display:grid;grid-template-columns:repeat(3,62px);gap:8px;pointer-events:auto}
+button{border:1px solid #687384;background:rgba(12,18,27,.9);color:#fff;border-radius:12px;height:54px;font-weight:800;font-size:11px;box-shadow:0 4px 10px #0008}
+button:active{transform:scale(.95);background:#28364a}
+#attack{grid-column:2/4;height:62px;font-size:15px}
+#mode{grid-column:1/2}
+#inventory{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:20;width:min(92vw,480px);max-height:80vh;overflow:auto;background:#101722;border:1px solid #59677a;border-radius:16px;padding:16px;display:none;box-shadow:0 20px 70px #000b}
+#inventory h2{margin:0 0 8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.card{background:#182230;border:1px solid #354255;border-radius:10px;padding:9px;font-size:12px}
+#death{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;text-align:center}
+#death h1{font-size:42px;margin:0 0 10px;color:#e85d5d}
+#cross{position:fixed;left:50%;top:50%;width:18px;height:18px;transform:translate(-50%,-50%);z-index:3;pointer-events:none;opacity:.7}
+#cross:before,#cross:after{content:"";position:absolute;background:#fff}.cross:before{width:18px;height:2px;top:8px}.cross:after{width:2px;height:18px;left:8px}
+@media(min-width:800px){#joy,.actions{display:none}#help:after{content:"  WASD move • Click shoot • B build • R remove • E loot • I inventory"}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud"></div><div id="msg"></div><div id="help">SURVIVE • FORTIFY • SCAVENGE</div>
+<div id="cross" class="cross"></div>
+<div id="controls">
+ <div id="joy"><div id="stick"></div></div>
+ <div class="actions">
+  <button id="attack">ATTACK</button><button id="mode">BUILD</button><button id="loot">LOOT</button>
+  <button id="remove">REMOVE</button><button id="inv">BAG</button>
+ </div>
+</div>
+<div id="inventory">
+ <h2>Survivor Inventory</h2>
+ <div id="invText"></div>
+ <hr><button id="closeInv" style="width:100%">CLOSE</button>
+</div>
+<div id="death"><div><h1>YOU DIED</h1><p id="deathText"></p><button id="restart">RESTART</button></div></div>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d');
+const W=120,H=80,T=42;
+let vw=innerWidth,vh=innerHeight;
+function resize(){vw=c.width=innerWidth;vh=c.height=innerHeight} addEventListener('resize',resize);resize();
+
+const keys={}; addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=1;if(e.key.toLowerCase()==='i')toggleInv();});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=0);
+const player={x:60,y:40,hp:100,maxhp:100,wood:80,metal:35,ammo:90,med:2,food:6,water:6,kills:0,weapon:'Pistol',damage:34,fireRate:320,lastShot:0};
+let zombies=[],loot=[],builds=[],buildMode=false,removeMode=false,gameOver=false,cam={x:0,y:0},day=1,time=7*60,saveTimer=0;
+const guns={Pistol:{damage:34,rate:320,range:6,ammo:1},Shotgun:{damage:85,rate:850,range:4,ammo:2},Rifle:{damage:48,rate:180,range:9,ammo:1}};
+let selected='Pistol';
+
+function rnd(a,b){return a+Math.random()*(b-a)} function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function key(x,y){return x+','+y}
+function blocked(x,y){
+ if(x<1||y<1||x>W-2||y>H-2)return true;
+ return builds.some(b=>b.x===Math.round(x)&&b.y===Math.round(y)&&b.type!=='door');
+}
+function addZombie(x,y,type='walker'){zombies.push({x,y,hp:type==='brute'?180:55,speed:type==='brute'?.65:1.0,type,attack:0,hit:0})}
+function addLoot(x,y){loot.push({x,y,wood:Math.floor(rnd(3,9)),metal:Math.floor(rnd(1,5)),ammo:Math.floor(rnd(2,9)),food:Math.random()<.45?1:0,water:Math.random()<.35?1:0,med:Math.random()<.12?1:0,used:false})}
+function generate(){
+ builds=[];
+ // starter fortress
+ for(let x=50;x<=70;x++){builds.push({x,y:30,type:'wall',hp:120});builds.push({x,y:50,type:'wall',hp:120})}
+ for(let y=31;y<50;y++){if(y!==40){builds.push({x:50,y,type:'wall',hp:120});builds.push({x:70,y,type:'wall',hp:120})}}
+ builds.push({x:60,y:30,type:'door',hp:100});
+ for(let i=0;i<75;i++){let x=Math.floor(rnd(4,W-4)),y=Math.floor(rnd(4,H-4));if(x>46&&x<74&&y>26&&y<54)continue;addLoot(x,y)}
+ for(let i=0;i<48;i++){let x=Math.floor(rnd(5,W-5)),y=Math.floor(rnd(5,H-5));if(x>45&&x<75&&y>25&&y<55)continue;addZombie(x,y)}
+ // town blocks / roads
+}
+generate();
+
+function spawnWave(){
+ let n=4+Math.floor(day*1.5);
+ for(let i=0;i<n;i++){let a=rnd(0,Math.PI*2),r=rnd(18,28);addZombie(player.x+Math.cos(a)*r,player.y+Math.sin(a)*r,Math.random()<Math.min(.25,day*.025)?'brute':'walker')}
+ toast('A zombie wave is approaching!');
+}
+function toast(s){const m=document.getElementById('msg');m.textContent=s;m.style.opacity=1;clearTimeout(toast.t);toast.t=setTimeout(()=>m.style.opacity=0,1800)}
+
+function shoot(){
+ if(gameOver)return;
+ let now=performance.now(),g=guns[selected]; if(now-player.lastShot<g.rate)return;
+ if(player.ammo<g.ammo){toast('Out of ammo');return}
+ player.lastShot=now;player.ammo-=g.ammo;
+ let target=null,best=g.range;
+ for(const z of zombies){let d=dist(player,z);if(d<best){best=d;target=z}}
+ if(target){target.hp-=g.damage;if(target.hp<=0){player.kills++;if(Math.random()<.18)addLoot(Math.round(target.x),Math.round(target.y));zombies.splice(zombies.indexOf(target),1)}}
+}
+function interactLoot(){
+ let found=false;
+ for(const l of loot){if(!l.used&&Math.hypot(l.x-player.x,l.y-player.y)<1.4){found=true;l.used=true;player.wood+=l.wood;player.metal+=l.metal;player.ammo+=l.ammo;player.food+=l.food;player.water+=l.water;player.med+=l.med;toast('Scavenged supplies')}} 
+ if(!found)toast('No supplies nearby');
+}
+function build(){
+ let x=Math.round(player.x+Math.cos(aimAngle())*1.3),y=Math.round(player.y+Math.sin(aimAngle())*1.3);
+ if(player.wood<8){toast('Need 8 wood');return}
+ if(builds.some(b=>b.x===x&&b.y===y)){toast('Already built');return}
+ if(Math.hypot(x-player.x,y-player.y)>2.2)return;
+ builds.push({x,y,type:'wall',hp:120});player.wood-=8;
+}
+function removeBuild(){
+ let x=Math.round(player.x+Math.cos(aimAngle())*1.3),y=Math.round(player.y+Math.sin(aimAngle())*1.3);
+ let i=builds.findIndex(b=>b.x===x&&b.y===y);
+ if(i>=0){builds.splice(i,1);player.wood+=3;toast('Salvaged wall')}
+}
+let aim=0; function aimAngle(){return aim}
+function move(dt){
+ let dx=0,dy=0;
+ if(keys.w||keys.arrowup)dy--;if(keys.s||keys.arrowdown)dy++;if(keys.a||keys.arrowleft)dx--;if(keys.d||keys.arrowright)dx++;
+ dx+=joy.x;dy+=joy.y;let len=Math.hypot(dx,dy);if(len>1){dx/=len;dy/=len}
+ if(len>0){aim=Math.atan2(dy,dx)}
+ let sp=4.2;
+ let nx=player.x+dx*sp*dt,ny=player.y+dy*sp*dt;
+ if(!blocked(nx,player.y))player.x=nx;if(!blocked(player.x,ny))player.y=ny;
+}
+const joy={x:0,y:0};let joyActive=false,joyId=null;
+const joyEl=document.getElementById('joy'),stick=document.getElementById('stick');
+function setJoy(e){let r=joyEl.getBoundingClientRect(),x=e.clientX-r.left-66,y=e.clientY-r.top-66,d=Math.hypot(x,y),m=48;if(d>m){x=x/d*m;y=y/d*m}joy.x=x/m;joy.y=y/m;stick.style.transform=`translate(${x}px,${y}px)`;aim=Math.atan2(joy.y,joy.x)}
+joyEl.addEventListener('pointerdown',e=>{joyActive=true;joyId=e.pointerId;joyEl.setPointerCapture(e.pointerId);setJoy(e)});
+joyEl.addEventListener('pointermove',e=>{if(joyActive&&e.pointerId===joyId)setJoy(e)});
+joyEl.addEventListener('pointerup',()=>{joyActive=false;joy.x=joy.y=0;stick.style.transform='translate(0,0)'});
+
+document.getElementById('attack').onclick=shoot;
+document.getElementById('loot').onclick=interactLoot;
+document.getElementById('mode').onclick=()=>{buildMode=!buildMode;removeMode=false;toast(buildMode?'BUILD MODE':'NORMAL MODE')};
+document.getElementById('remove').onclick=()=>{removeMode=!removeMode;buildMode=false;toast(removeMode?'REMOVE MODE':'NORMAL MODE')};
+document.getElementById('inv').onclick=toggleInv;
+document.getElementById('closeInv').onclick=toggleInv;
+document.getElementById('restart').onclick=()=>location.reload();
+
+function toggleInv(){let e=document.getElementById('inventory');if(e.style.display==='block'){e.style.display='none';return}updateInv();e.style.display='block'}
+function updateInv(){document.getElementById('invText').innerHTML=`
+<div class="grid">
+<div class="card">🔫 Weapon<br><b>${selected}</b><br><button onclick="selectGun('Pistol')">Pistol</button> <button onclick="selectGun('Shotgun')">Shotgun</button> <button onclick="selectGun('Rifle')">Rifle</button></div>
+<div class="card">📦 Resources<br>Wood: ${player.wood}<br>Metal: ${player.metal}<br>Ammo: ${player.ammo}</div>
+<div class="card">🥫 Food: ${player.food}<br>💧 Water: ${player.water}<br>💊 Medkits: ${player.med}</div>
+<div class="card">🏆 Kills: ${player.kills}<br>📅 Day: ${day}<br>⏰ ${clock()}</div>
+</div>`}
+window.selectGun=n=>{selected=n;player.weapon=n;toggleInv();toast(n+' equipped')};
+
+function clock(){let h=Math.floor(time/60)%24,m=Math.floor(time%60);return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}
+function update(dt){
+ if(gameOver)return;
+ time+=dt*1.5;if(time>=24*60){time-=24*60;day++;spawnWave();if(day%3===0){player.wood+=20;player.metal+=10;toast('Morning: supplies recovered')}} 
+ move(dt);
+ for(const z of zombies){
+  let dx=player.x-z.x,dy=player.y-z.y,d=Math.hypot(dx,dy);
+  if(d<18){let sp=z.speed*dt;if(d>.7){let nx=z.x+dx/d*sp,ny=z.y+dy/d*sp;if(!blocked(nx,z.y))z.x=nx;if(!blocked(z.x,ny))z.y=ny}
+   if(d<.8){z.attack-=dt;if(z.attack<=0){player.hp-=z.type==='brute'?18:8;z.attack=.8}}
+  }
+ }
+ if(player.hp<=0){gameOver=true;document.getElementById('death').style.display='flex';document.getElementById('deathText').textContent=`You survived ${day} days and killed ${player.kills} zombies.`}
+ saveTimer+=dt;if(saveTimer>5){saveTimer=0;saveGame()}
+}
+function saveGame(){try{localStorage.setItem('dff-save',JSON.stringify({player,builds,day,time,selected}))}catch(e){}}
+function loadGame(){try{let s=localStorage.getItem('dff-save');if(!s)return;let d=JSON.parse(s);Object.assign(player,d.player);builds=d.builds||builds;day=d.day||1;time=d.time||420;selected=d.selected||'Pistol';toast('Saved game loaded')}catch(e){}}
+loadGame();
+
+function draw(){
+ ctx.clearRect(0,0,vw,vh);
+ cam.x=player.x*T-vw/2;cam.y=player.y*T-vh/2;
+ cam.x=Math.max(0,Math.min(W*T-vw,cam.x));cam.y=Math.max(0,Math.min(H*T-vh,cam.y));
+ ctx.save();ctx.translate(-cam.x,-cam.y);
+ // terrain
+ for(let y=Math.floor(cam.y/T)-1;y<=Math.ceil((cam.y+vh)/T)+1;y++)for(let x=Math.floor(cam.x/T)-1;x<=Math.ceil((cam.x+vw)/T)+1;x++){
+  if(x<0||y<0||x>=W||y>=H)continue;
+  ctx.fillStyle=((x+y)%2?'#202b25':'#1d2722');ctx.fillRect(x*T,y*T,T,T);
+  if(x%10===0&&y%10===0){ctx.fillStyle='#18211d';ctx.fillRect(x*T+5,y*T+5,T*9,T*9)}
+ }
+ // road-like lanes
+ ctx.fillStyle='rgba(75,78,65,.22)';ctx.fillRect(0,38*T,W*T,5*T);ctx.fillRect(58*T,0,5*T,H*T);
+ // loot
+ for(const l of loot)if(!l.used){ctx.fillStyle='#d5a447';ctx.fillRect(l.x*T+15,l.y*T+15,12,12)}
+ // builds
+ for(const b of builds){ctx.fillStyle=b.type==='door'?'#8c6a45':'#707984';ctx.fillRect(b.x*T+2,b.y*T+2,T-4,T-4);ctx.fillStyle='#3d4650';ctx.fillRect(b.x*T+7,b.y*T+8,T-14,5);ctx.fillRect(b.x*T+7,b.y*T+25,T-14,5)}
+ // zombies
+ for(const z of zombies){ctx.fillStyle=z.type==='brute'?'#9b4545':'#5e9a67';ctx.beginPath();ctx.arc(z.x*T+21,z.y*T+21,13,0,Math.PI*2);ctx.fill();ctx.fillStyle='#111';ctx.fillRect(z.x*T+14,z.y*T+16,5,4);ctx.fillRect(z.x*T+24,z.y*T+16,5,4)}
+ // player
+ ctx.save();ctx.translate(player.x*T+21,player.y*T+21);ctx.rotate(aim);ctx.fillStyle='#4c83c3';ctx.fillRect(-12,-12,24,24);ctx.fillStyle='#d7c1a0';ctx.beginPath();ctx.arc(0,-3,8,0,Math.PI*2);ctx.fill();ctx.fillStyle='#222';ctx.fillRect(7,-3,18,5);ctx.restore();
+ // build ghost
+ if(buildMode||removeMode){let x=Math.round(player.x+Math.cos(aim)*1.3),y=Math.round(player.y+Math.sin(aim)*1.3);ctx.fillStyle=buildMode?'rgba(80,200,100,.45)':'rgba(220,80,80,.45)';ctx.fillRect(x*T+3,y*T+3,T-6,T-6)}
+ ctx.restore();
+ // night overlay
+ let sun=Math.max(0,Math.min(1,(Math.cos((time-720)/1440*Math.PI*2)+1)/2));ctx.fillStyle=`rgba(5,10,24,${.58*(1-sun)})`;ctx.fillRect(0,0,vw,vh);
+ updateHud();
+}
+function updateHud(){document.getElementById('hud').innerHTML=`<b>DEAD FRONTIER: FORTRESS</b><br>
+<div class="bar"><i style="width:${Math.max(0,player.hp)}%"></i></div>
+❤️ ${Math.ceil(player.hp)}/${player.maxhp} &nbsp; 🔫 ${selected} &nbsp; 💥 ${player.ammo}<br>
+🪵 ${player.wood} &nbsp; 🔩 ${player.metal} &nbsp; 🧟 ${player.kills}<br>
+📅 Day ${day} • ${clock()} • ${zombies.length} nearby<br>
+${buildMode?'🔨 BUILD: tap ATTACK/BUILD to place wall':removeMode?'🧹 REMOVE MODE':'Explore • Loot • Build • Survive'}`}
+
+let last=performance.now();
+function loop(now){let dt=Math.min(.05,(now-last)/1000);last=now;update(dt);draw();requestAnimationFrame(loop)}requestAnimationFrame(loop);
+
+addEventListener('pointerdown',e=>{
+ if(e.target.closest('button')||e.target.closest('#joy')||document.getElementById('inventory').style.display==='block')return;
+ if(innerWidth>800){
+  let wx=(e.clientX+cam.x)/T,wy=(e.clientY+cam.y)/T;aim=Math.atan2(wy-player.y,wx-player.x);
+  if(buildMode)build();else if(removeMode)removeBuild();else shoot();
+ }
+});
+addEventListener('keydown',e=>{if(e.key.toLowerCase()==='b'){buildMode=!buildMode;removeMode=false}if(e.key.toLowerCase()==='r'){removeMode=!removeMode;buildMode=false}if(e.key.toLowerCase()==='e')interactLoot()});
+</script>
+</body>
+</html>

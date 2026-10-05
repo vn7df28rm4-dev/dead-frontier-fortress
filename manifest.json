@@ -1,0 +1,10 @@
+{
+  "name": "Dead Frontier: Fortress",
+  "short_name": "Dead Frontier",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#080b10",
+  "theme_color": "#111722",
+  "orientation": "landscape",
+  "icons": []
+}
